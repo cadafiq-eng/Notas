@@ -1,0 +1,15 @@
+{
+  "name": "Bitácora IA",
+  "short_name": "Bitácora IA",
+  "description": "Graba, transcribe y resume reuniones y notas de investigación con IA",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f1115",
+  "theme_color": "#0f1115",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
