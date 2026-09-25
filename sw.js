@@ -1,6 +1,6 @@
-// Bitácora IA — Service Worker
-// IMPORTANTE: sube este número cada vez que publiques cambios en index.html
-const CACHE_VERSION = 'bitacora-ia-v1';
+// Bitácora IA — Service Worker v2
+// Sube este número al publicar cambios en index.html
+const CACHE_VERSION = 'bitacora-ia-v2';
 const CORE_ASSETS = [
   './index.html',
   './manifest.json',
@@ -28,12 +28,19 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const req = event.request;
-
-  // Nunca cachear llamadas a APIs externas (OpenAI, etc.)
+  // Nunca cachear llamadas a APIs externas
   if (req.url.includes('api.openai.com')) return;
-
   if (req.method !== 'GET') return;
 
+  // Network-first para el HTML principal (evita stale PWA en iOS)
+  if (req.mode === 'navigate') {
+    event.respondWith(
+      fetch(req).catch(() => caches.match('./index.html'))
+    );
+    return;
+  }
+
+  // Cache-first para assets estáticos
   event.respondWith(
     caches.match(req).then((cached) => {
       const network = fetch(req)
