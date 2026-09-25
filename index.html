@@ -201,6 +201,12 @@
       <div class="section-label">Carpetas</div>
       <div id="folderList"></div>
       <button class="new-folder-btn" id="addFolderBtn">+ Nueva carpeta</button>
+      <div id="navStorageInfo" style="margin-top:auto;padding:10px 12px 4px;font-size:11px;color:var(--text-dim);">
+        <div style="height:4px;border-radius:3px;background:var(--bg-elev-2);overflow:hidden;margin-bottom:5px;">
+          <div id="navStorageBar" style="height:100%;border-radius:3px;background:var(--mint);width:0%;transition:width .4s;"></div>
+        </div>
+        <span id="navStorageLabel">—</span>
+      </div>
     </nav>
     <main class="content" id="mainContent"></main>
   </div>
@@ -301,6 +307,27 @@
         <option value="">Detección automática</option>
       </select>
     </div>
+    <div class="field">
+      <label>Límite de grabación por nota</label>
+      <select id="maxRecSelect">
+        <option value="0">Sin límite</option>
+        <option value="10">10 minutos</option>
+        <option value="20">20 minutos</option>
+        <option value="30" selected>30 minutos</option>
+        <option value="60">1 hora</option>
+        <option value="90">1.5 horas</option>
+      </select>
+      <div class="hint">La grabación se detiene automáticamente al alcanzar este tiempo.</div>
+    </div>
+    <div class="field" id="storageField">
+      <label>Almacenamiento usado</label>
+      <div style="margin-top:6px;">
+        <div style="height:6px;border-radius:4px;background:var(--bg-elev-2);overflow:hidden;">
+          <div id="storageBar" style="height:100%;border-radius:4px;background:var(--mint);width:0%;transition:width .4s;"></div>
+        </div>
+        <div id="storageLabel" style="font-size:12px;color:var(--text-dim);margin-top:5px;">Calculando…</div>
+      </div>
+    </div>
     <div class="btn-row">
       <button class="btn" id="exportAllBtn">Exportar respaldo (JSON)</button>
       <button class="btn primary" id="settingsSaveBtn">Guardar</button>
@@ -362,6 +389,7 @@
     model: localStorage.getItem("bitacora_model") || "gpt-4o-mini",
     lang: localStorage.getItem("bitacora_lang") ?? "es",
     theme: localStorage.getItem("bitacora_theme") || "dark",
+    maxRec: parseInt(localStorage.getItem("bitacora_maxRec") ?? "30", 10),
   });
 
   function loadSettingsFields() {
@@ -369,11 +397,48 @@
     document.getElementById("apiKeyInput").value = s.apiKey;
     document.getElementById("modelSelect").value = s.model;
     document.getElementById("langSelect").value = s.lang;
+    document.getElementById("maxRecSelect").value = String(s.maxRec);
+    updateStorageDisplay();
   }
   function saveSettingsFields() {
     localStorage.setItem("bitacora_apiKey", document.getElementById("apiKeyInput").value.trim());
     localStorage.setItem("bitacora_model", document.getElementById("modelSelect").value);
     localStorage.setItem("bitacora_lang", document.getElementById("langSelect").value);
+    localStorage.setItem("bitacora_maxRec", document.getElementById("maxRecSelect").value);
+  }
+
+  /* ===== Storage indicator ===== */
+  async function updateStorageDisplay() {
+    let usedMB = 0, quotaMB = 50;
+    try {
+      if (navigator.storage && navigator.storage.estimate) {
+        const est = await navigator.storage.estimate();
+        usedMB = (est.usage || 0) / (1024 * 1024);
+        quotaMB = (est.quota || 50 * 1024 * 1024) / (1024 * 1024);
+      } else {
+        // Fallback: sumar tamaños de blobs de audio en IDB
+        const audioRecs = await idbGetAll("audio");
+        usedMB = audioRecs.reduce((acc, r) => acc + (r.blob ? r.blob.size : 0), 0) / (1024 * 1024);
+        quotaMB = 50;
+      }
+    } catch(e) { usedMB = 0; quotaMB = 50; }
+
+    const pct = Math.min(100, (usedMB / quotaMB) * 100);
+    const fmt = (n) => n < 1 ? (n * 1024).toFixed(0) + " KB" : n.toFixed(1) + " MB";
+    const label = `${fmt(usedMB)} de ~${fmt(quotaMB)} usados`;
+    const color = pct > 80 ? "var(--danger)" : pct > 55 ? "#f0b35c" : "var(--mint)";
+
+    // Panel de ajustes
+    const bar = document.getElementById("storageBar");
+    const lbl = document.getElementById("storageLabel");
+    if (bar) { bar.style.width = pct + "%"; bar.style.background = color; }
+    if (lbl) lbl.textContent = label;
+
+    // Barra lateral (nav)
+    const navBar = document.getElementById("navStorageBar");
+    const navLbl = document.getElementById("navStorageLabel");
+    if (navBar) { navBar.style.width = pct + "%"; navBar.style.background = color; }
+    if (navLbl) navLbl.textContent = label;
   }
 
   /* ===== Theme ===== */
@@ -646,9 +711,14 @@
 
   function tickTimer() {
     clearInterval(recordTimerInterval);
+    const maxSec = getSettings().maxRec * 60;  // 0 = sin límite
     recordTimerInterval = setInterval(() => {
       recordedSeconds += 1;
       document.getElementById("recTimer").textContent = fmtDuration(recordedSeconds);
+      if (maxSec > 0 && recordedSeconds >= maxSec) {
+        toast(`Límite de ${getSettings().maxRec} min alcanzado. Guardando nota…`);
+        stopRecording();
+      }
     }, 1000);
   }
 
@@ -694,6 +764,7 @@
     await idbPut("audio", { noteId: id, blob, mimeType: note.mimeType });
     await loadNotes();
     renderFolderNav(); renderNoteList();
+    updateStorageDisplay();
     openNoteDetail(id);
     toast("Nota guardada. Toca «Transcribir» para procesarla.");
   }
@@ -802,6 +873,7 @@
     await idbDelete("notes", currentDetailNoteId);
     await idbDelete("audio", currentDetailNoteId);
     await loadNotes(); renderFolderNav(); renderNoteList();
+    updateStorageDisplay();
     closeOverlay("detailOverlay"); toast("Nota eliminada");
   });
 
@@ -920,6 +992,7 @@
     await loadNotes();
     renderFolderNav();
     renderNoteList();
+    updateStorageDisplay();
     if (!getSettings().apiKey) {
       setTimeout(() => toast("Agrega tu clave de API de OpenAI en Ajustes ⚙️ para transcribir y resumir"), 900);
     }
