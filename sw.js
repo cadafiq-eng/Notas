@@ -1,58 +1,27 @@
-// Bitácora IA — Service Worker v2
-// Sube este número al publicar cambios en index.html
-const CACHE_VERSION = 'bitacora-ia-v3';
-const CORE_ASSETS = [
-  './index.html',
-  './manifest.json',
-  './icon-192.png',
-  './icon-512.png'
-];
-
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_VERSION).then((cache) => cache.addAll(CORE_ASSETS))
-  );
-  self.skipWaiting();
+const CACHE_VERSION = 'bitacora-ia-v2';
+const CORE_ASSETS = ['./index.html', './manifest.json', './icon-192.png', './icon-512.png'];
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(CACHE_VERSION).then(cache => cache.addAll(CORE_ASSETS)));
 });
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys.filter((k) => k !== CACHE_VERSION).map((k) => caches.delete(k))
-      )
-    )
-  );
-  self.clients.claim();
+self.addEventListener('activate', event => {
+  event.waitUntil((async () => {
+    for (const key of await caches.keys()) {
+      if (key.startsWith('bitacora-ia-') && key !== CACHE_VERSION) await caches.delete(key);
+    }
+    await self.clients.claim();
+  })());
 });
-
-self.addEventListener('fetch', (event) => {
-  const req = event.request;
-  // Nunca cachear llamadas a APIs externas
-  if (req.url.includes('api.openai.com')) return;
-  if (req.method !== 'GET') return;
-
-  // Network-first para el HTML principal (evita stale PWA en iOS)
-  if (req.mode === 'navigate') {
-    event.respondWith(
-      fetch(req).catch(() => caches.match('./index.html'))
-    );
-    return;
-  }
-
-  // Cache-first para assets estáticos
-  event.respondWith(
-    caches.match(req).then((cached) => {
-      const network = fetch(req)
-        .then((res) => {
-          if (res && res.status === 200 && res.type === 'basic') {
-            const clone = res.clone();
-            caches.open(CACHE_VERSION).then((cache) => cache.put(req, clone));
-          }
-          return res;
-        })
-        .catch(() => cached);
-      return cached || network;
-    })
-  );
+// Cache only the app shell; updates wait for existing clients to close.
+self.addEventListener('fetch', event => {
+  const req = event.request, url = new URL(req.url);
+  const assets = CORE_ASSETS.map(path => new URL(path, self.registration.scope).href);
+  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
+  if (!assets.includes(url.href) && !(req.mode === 'navigate' && url.href === self.registration.scope)) return;
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE_VERSION);
+    const cached = await cache.match(req.mode === 'navigate' ? './index.html' : req);
+    if (cached) return cached;
+    try { return await fetch(req); }
+    catch { return new Response('Sin conexión. Abre la app una vez con internet.', {status:503}); }
+  })());
 });
