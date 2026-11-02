@@ -1,62 +1,35 @@
-# Bitácora IA — copia corregida
+# Bitácora IA — v3 (transcripción local)
 
 ## Instalación
 
-Publica juntos index.html, sw.js, manifest.json y los dos iconos en un servidor HTTPS. Para desarrollo se admite localhost. Abrir index.html directamente como archivo o desde la vista previa de Drive no ofrece un entorno válido para grabación/PWA.
+Publica juntos index.html, sw.js, manifest.json, icon-192.png e icon-512.png en un servidor HTTPS (GitHub Pages). Para conservar las notas existentes, publica en el mismo dominio y ruta que la versión anterior y usa el mismo navegador. La base de datos (bitacoraIA, versión 2) no cambia: notas, carpetas y audios se conservan.
 
-No se modificó ningún archivo de Google Drive. Esta copia parte de los cinco archivos individuales de la carpeta; el ZIP de la carpeta es anterior a ellos. La base de datos conserva su nombre y migra de versión 1 a 2 sin borrar notas ni audio. Para conservar datos existentes, publica en el mismo origen y perfil de navegador. Otro dominio, puerto o navegador tendrá almacenamiento independiente.
+## Cambios respecto a v2
 
-Si sustituyes una instalación existente, termina las grabaciones, respalda tus datos y cierra todas las ventanas de la app antes de abrir la versión nueva. El nuevo service worker espera al cierre de los clientes para activarse. La versión original usaba activación inmediata y borraba cachés ajenas; se corrigieron ambas conductas.
+- Transcripción sin proveedor externo: Whisper se ejecuta en el propio navegador (transformers.js de Hugging Face). Sin clave de API, sin costo y sin enviar el audio a ningún servidor.
+- Se eliminó OpenAI por completo (transcripción y resumen con GPT). La clave guardada en versiones anteriores se borra del dispositivo al abrir la app.
+- Ajustes: tamaño del modelo (Tiny ~40 MB, Base ~80 MB recomendado, Small ~250 MB) e idioma (español, inglés, automático).
+- La primera transcripción descarga el modelo elegido; queda en caché del navegador y después funciona sin conexión.
+- Resúmenes y tareas de notas antiguas se siguen mostrando y exportando, pero ya no se generan.
+- Descargas por nota: transcripción sola (.txt), nota completa (.txt), Markdown (.md), PDF y audio. Los .txt/.md llevan BOM UTF-8 para que acentos y ñ se vean bien en Bloc de notas.
+- PDF generado con jsPDF (cdnjs), tamaño carta; requiere conexión la primera vez.
+- Service worker v3: el HTML se sirve con red primero (las actualizaciones llegan sin borrar datos); no intercepta modelos ni librerías externas.
 
-## Cambios
+## Rendimiento esperado
 
-- Grabación con selección de WebM/Opus, MP4 o Ogg según soporte real del navegador.
-- Exclusión de inicios simultáneos mientras se concede permiso y bloqueo de un nuevo inicio durante el guardado.
-- Entrega de audio solicitada cada cinco segundos y persistencia por fragmentos en IndexedDB. Recuperación al reabrir, orden correcto de fragmentos y protección contra duplicados de notas ya guardadas.
-- Nota y audio final guardados en una única transacción. Los auxiliares de escritura esperan la confirmación de la transacción. Si falla el guardado final, se intenta descargar una copia de rescate y se mantienen los fragmentos persistidos.
-- Contador basado en tiempo transcurrido, descontando pausas explícitas; no depende de contar ejecuciones del temporizador.
-- Solicitud de mantener pantalla encendida, readquisición al volver a la app, aviso de interrupción del micrófono y cierre de sus pistas al terminar.
-- Confirmación al descartar, indicación Pausar/Reanudar, protección al cerrar y acceso a una grabación activa desde el botón de nueva nota.
-- Importación con manejo de errores, archivos vacíos y espera limitada de metadatos; duración infinita normalizada.
-- Extensiones correctas en descarga y transcripción; rechazo local de transcripciones superiores a 25 MB.
-- Validación de campos del resumen y protección si se elimina una nota durante una solicitud de IA.
-- Liberación de la URL de audio al cambiar de detalle.
-- Controles de al menos 44 px, foco visible, texto largo adaptable y campos móviles de 16 px para reducir zoom involuntario. Orientación libre en el manifiesto.
-- Caché limitada a los archivos de la app; conserva otras cachés y no intercepta APIs externas.
+- Computadora: Base transcribe más rápido que tiempo real en la mayoría de los equipos.
+- Celular: usa Tiny o Base; puede tardar de 1 a 3 veces la duración del audio. Mantén la app visible durante la transcripción.
+- Audios de más de 1 hora pueden agotar la memoria del navegador en celulares; divídelos.
+- Precisión: Base/Small en español es buena para dictado y reuniones claras; con ruido o varias voces simultáneas baja. Tiny comete más errores.
 
-## Pantalla apagada o bloqueada
+## Grabación (sin cambios respecto a v2)
 
-No se garantiza grabación continua con pantalla bloqueada en una app web. Safari puede suspender el micrófono; Chrome en Android puede retrasar los eventos que entregan audio. La solicitud Wake Lock evita el apagado automático cuando está disponible y autorizada; no impide un bloqueo manual y puede ser revocada por el sistema.
+Respaldo de fragmentos cada 5 s en IndexedDB, recuperación al reabrir, Wake Lock, pausa/reanudar y descarga de rescate si falla el guardado. No se garantiza grabación continua con pantalla bloqueada en una app web.
 
-El respaldo de cinco segundos es una solicitud al navegador, no una garantía de frecuencia. Solo puede recuperarse audio ya entregado y almacenado. Si el sistema cierra la app, puede perderse el último tramo. Una recuperación tras cierre abrupto puede estar incompleta o no ser reproducible dependiendo del contenedor. El contador expresa tiempo transcurrido sin pausas explícitas, no duración garantizada de sonido capturado.
+## Pruebas pendientes en dispositivo
 
-Para sesiones importantes, mantén la app visible y escucha el archivo resultante. Si el requisito indispensable es continuar al bloquear, hace falta una implementación nativa con los permisos y servicios de audio en segundo plano de cada plataforma; esta entrega no incluye esa conversión.
-
-Fuentes técnicas:
-- https://developer.mozilla.org/en-US/docs/Web/API/MediaRecorder/dataavailable_event
-- https://developer.mozilla.org/en-US/docs/Web/API/WakeLock/request
-- https://developer.mozilla.org/en-US/docs/Web/API/WakeLockSentinel
-
-## Pruebas realizadas
-
-Se ejecutaron pruebas automatizadas con Node.js 24 y un entorno simulado de navegador, micrófono y almacenamiento. Resultado: aprobado.
-
-1. Doble inicio durante permiso pendiente: una sola instancia.
-2. Selección de MP4 cuando es el formato soportado y solicitud de fragmentos de 5 s.
-3. Salto de 65 s sin ejecutar temporizadores: contador correcto; pausa de 30 s excluida y reanudación de 5 s incluida.
-4. Persistencia temporal, guardado final, MIME correcto, limpieza de borradores y liberación del micrófono.
-5. Cancelación sin crear nota.
-6. Recuperación ordenada de fragmentos y no duplicación de una nota existente.
-7. Extensiones WAV y MP3.
-8. Activación del service worker conserva cachés de otras aplicaciones y excluye APIs externas.
-9. Sintaxis del código principal y service worker válida; manifiesto JSON válido y archivos de instalación presentes.
-
-Estas pruebas verifican lógica con simulaciones. No constituyen pruebas de captura física, transacciones reales en un navegador, diseño visual, instalación PWA ni continuidad con bloqueo. No se hicieron llamadas de pago a OpenAI.
-
-## Pruebas pendientes en dispositivos
-
-En Safari/iPhone y Chrome/Android: grabar 30 s, pausar 10 s, reanudar y detener; escuchar el resultado. Repetir con bloqueo manual de 60 s, cambio de aplicación, llamada entrante y ahorro de batería. Comparar audio y contador. Cerrar abruptamente tras varios fragmentos y verificar recuperación/reproducción al reabrir. Probar micrófono denegado, almacenamiento lleno, modo sin conexión tras una primera carga, instalación PWA, vista estrecha y horizontal, importación WAV/MP3/MP4 y actualización con datos existentes.
-
-## Límites conservados
-
-El respaldo JSON existente contiene notas y carpetas, no audio ni claves; descarga los audios por separado. El almacenamiento local puede ser eliminado por el usuario o por el sistema; la solicitud de persistencia no obliga al navegador. La clave de OpenAI continúa almacenándose en localStorage como en el original: usa una clave personal restringida; para distribución multiusuario se necesita un servidor que gestione credenciales. No se incluye servidor ni modificación de ese despliegue. Las funciones de IA requieren conexión y saldo/permisos de la API.
+1. Abrir la app actualizada y confirmar que las notas previas siguen ahí.
+2. Transcribir una nota corta con Base (primera vez: barra de descarga del modelo).
+3. Repetir sin conexión para confirmar que el modelo quedó en caché.
+4. Probar en iPhone (Safari) una grabación mp4 y un archivo importado mp3/m4a.
+5. Descargar los cinco formatos y abrir el .txt en Bloc de notas y el PDF.

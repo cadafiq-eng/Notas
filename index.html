@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0f1115" />
-<title>Bitácora IA — Notas de voz con transcripción y resumen</title>
+<title>Bitácora IA — Notas de voz con transcripción local</title>
 <link rel="manifest" href="./manifest.json" />
 <link rel="apple-touch-icon" href="./icon-192.png" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -257,7 +257,7 @@
     outline: none;
   }
   .field textarea { resize: vertical; min-height: 70px; }
-  .field .hint { font-size: 11.5px; color: var(--text-dim); margin-top: 5px; line-height: 1.4; }
+  .field .hint, .hint { font-size: 11.5px; color: var(--text-dim); margin-top: 5px; line-height: 1.4; }
   .btn-row { display: flex; gap: 10px; margin-top: 6px; }
   .btn {
     flex: 1;
@@ -280,17 +280,6 @@
     cursor: pointer; border: 2px solid transparent;
   }
   .color-swatch.selected { border-color: var(--text); }
-
-  .folder-row {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 4px;
-    border-bottom: 1px solid var(--border);
-  }
-  .folder-row span.name { flex: 1; font-size: 14px; }
-  .folder-row button {
-    background: none; border: none; color: var(--text-dim);
-    cursor: pointer; padding: 4px;
-  }
 
   /* ---------- Recording sheet ---------- */
   .rec-visual {
@@ -359,6 +348,7 @@
   .mini-btn:disabled { opacity: .5; }
 
   .detail-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 16px 0 6px; }
+  .export-label { font-size: 12px; color: var(--text-dim); width: 100%; margin-bottom: -2px; }
 
   .toast {
     position: fixed; bottom: calc(20px + env(safe-area-inset-bottom));
@@ -367,6 +357,7 @@
     color: var(--text); padding: 10px 18px; border-radius: 999px;
     font-size: 13px; z-index: 80; opacity: 0; pointer-events: none;
     transition: opacity .2s, transform .2s;
+    max-width: calc(100vw - 32px); text-align: center;
   }
   .toast.show { opacity: 1; transform: translateX(-50%) translateY(-6px); }
 
@@ -505,16 +496,17 @@
     <div class="close-row"><button class="icon-btn" data-close="settingsOverlay">✕</button></div>
     <h2>Ajustes</h2>
     <div class="field">
-      <label>Clave de API (OpenAI)</label>
-      <input type="password" id="apiKeyInput" placeholder="sk-..." />
-      <div class="hint">Se guarda únicamente en este dispositivo (localStorage) y se usa para transcripción (Whisper) y resumen (GPT). Nunca se envía a otro servidor que no sea api.openai.com.</div>
+      <label>Motor de transcripción</label>
+      <div class="hint" style="margin-top:0;font-size:13px;">Whisper ejecutándose <b>en este dispositivo</b>. No requiere clave de API ni cuenta, no tiene costo y el audio nunca sale del equipo. La primera vez se descarga el modelo (queda guardado para usos posteriores y funciona sin conexión después).</div>
     </div>
     <div class="field">
-      <label>Modelo de resumen</label>
+      <label>Tamaño del modelo</label>
       <select id="modelSelect">
-        <option value="gpt-4o-mini">gpt-4o-mini (rápido y económico)</option>
-        <option value="gpt-4o">gpt-4o (más completo)</option>
+        <option value="Xenova/whisper-tiny">Tiny — muy rápido, ~40 MB, menor precisión</option>
+        <option value="Xenova/whisper-base">Base — equilibrado, ~80 MB (recomendado)</option>
+        <option value="Xenova/whisper-small">Small — más preciso, ~250 MB, lento en celular</option>
       </select>
+      <div class="hint">En celulares, Tiny o Base. Small conviene en computadora.</div>
     </div>
     <div class="field">
       <label>Idioma de transcripción</label>
@@ -607,6 +599,7 @@
   let isPaused = false;
   let currentDetailNoteId = null;
   let editingFolderId = null;
+  let transcribingNoteId = null;
 
   const FOLDER_COLORS = ["#6ee7b7", "#7aa2f7", "#f0b35c", "#f08080", "#c89bf7", "#9aa1b1"];
 
@@ -623,33 +616,37 @@
     return d.toLocaleDateString("es-MX", { day: "2-digit", month: "short" }) + " · " +
       d.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
   }
+  function fmtDateLong(ts) {
+    const d = new Date(ts);
+    return d.toLocaleDateString("es-MX", { day: "2-digit", month: "long", year: "numeric" }) + ", " +
+      d.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+  }
 
-  function toast(msg) {
+  function toast(msg, ms = 2600) {
     const t = document.getElementById("toast");
     t.textContent = msg;
     t.classList.add("show");
     clearTimeout(toast._h);
-    toast._h = setTimeout(() => t.classList.remove("show"), 2600);
+    toast._h = setTimeout(() => t.classList.remove("show"), ms);
   }
 
   /* ======================= Settings ======================= */
+  const MODEL_IDS = ["Xenova/whisper-tiny", "Xenova/whisper-base", "Xenova/whisper-small"];
   function getSettings() {
+    const m = localStorage.getItem("bitacora_asrModel");
     return {
-      apiKey: localStorage.getItem("bitacora_apiKey") || "",
-      model: localStorage.getItem("bitacora_model") || "gpt-4o-mini",
+      asrModel: MODEL_IDS.includes(m) ? m : "Xenova/whisper-base",
       lang: localStorage.getItem("bitacora_lang") ?? "es",
       theme: localStorage.getItem("bitacora_theme") || "dark",
     };
   }
   function saveSettingsFields() {
-    localStorage.setItem("bitacora_apiKey", document.getElementById("apiKeyInput").value.trim());
-    localStorage.setItem("bitacora_model", document.getElementById("modelSelect").value);
+    localStorage.setItem("bitacora_asrModel", document.getElementById("modelSelect").value);
     localStorage.setItem("bitacora_lang", document.getElementById("langSelect").value);
   }
   function loadSettingsFields() {
     const s = getSettings();
-    document.getElementById("apiKeyInput").value = s.apiKey;
-    document.getElementById("modelSelect").value = s.model;
+    document.getElementById("modelSelect").value = s.asrModel;
     document.getElementById("langSelect").value = s.lang;
   }
 
@@ -769,14 +766,13 @@
     if (!editingFolderId) return;
     if (!confirm("¿Eliminar esta carpeta? Las notas no se borrarán, quedarán sin carpeta.")) return;
     await idbDelete("folders", editingFolderId);
-    notes.filter((n) => n.folderId === editingFolderId).forEach(async (n) => {
+    for (const n of notes.filter((x) => x.folderId === editingFolderId)) {
       n.folderId = null;
       await idbPut("notes", n);
-    });
+    }
     if (activeFolderId === editingFolderId) activeFolderId = "all";
     await loadFolders();
     await loadNotes();
-    await recoverDrafts();
     renderFolderNav();
     renderNoteList();
     closeOverlay("folderOverlay");
@@ -827,14 +823,14 @@
   }
 
   function statusPill(n) {
+    if (transcribingNoteId === n.id) return `<span class="pill status-pending">Transcribiendo…</span>`;
     if (!n.transcript) return `<span class="pill status-pending">Sin transcribir</span>`;
-    if (!n.summary) return `<span class="pill status-pending">Sin resumen</span>`;
-    return `<span class="pill status-ready">Listo</span>`;
+    return `<span class="pill status-ready">Transcrita</span>`;
   }
 
   function noteCardHTML(n) {
     const folder = folders.find((f) => f.id === n.folderId);
-    const preview = n.summary || n.transcript || "Aún sin procesar — toca para transcribir.";
+    const preview = n.transcript || n.summary || "Aún sin procesar — toca para transcribir.";
     return `<div class="note-card" data-id="${n.id}">
       <div class="row1">
         <div class="title">${escapeHTML(n.title || "Nota sin título")}</div>
@@ -984,7 +980,7 @@
     if (document.visibilityState === "visible") { keepScreenOn(); toast("Comprueba el audio: el bloqueo puede interrumpir el micrófono."); }
     else if (mediaRecorder?.state === "recording") { try { mediaRecorder.requestData(); } catch {} }
   });
-  window.addEventListener("beforeunload", e => { if (recordingActive()) { e.preventDefault(); e.returnValue = ""; } });
+  window.addEventListener("beforeunload", e => { if (recordingActive() || transcribingNoteId) { e.preventDefault(); e.returnValue = ""; } });
   async function recoverDrafts() {
     const groups = new Map();
     for (const row of await idbGetAll("drafts")) {
@@ -1072,9 +1068,14 @@
     const audioRec = await idbGet("audio", n.id);
     if (detailAudioUrl) URL.revokeObjectURL(detailAudioUrl);
     const audioUrl = detailAudioUrl = audioRec ? URL.createObjectURL(audioRec.blob) : null;
+    const busy = transcribingNoteId !== null;
+    const thisBusy = transcribingNoteId === n.id;
 
     const folderOptions = `<option value="">Sin carpeta</option>` +
       folders.map((f) => `<option value="${f.id}" ${f.id === n.folderId ? "selected" : ""}>${escapeHTML(f.name)}</option>`).join("");
+
+    const hasSummary = !!n.summary;
+    const hasTasks = n.actionItems && n.actionItems.length > 0;
 
     const body = document.getElementById("detailBody");
     body.innerHTML = `
@@ -1092,30 +1093,30 @@
 
       <div class="section-block">
         <h4>Transcripción
-          <button class="mini-btn" id="transcribeBtn" ${!audioRec ? "disabled" : ""}>
-            ${n.transcript ? "Re-transcribir" : "Transcribir con IA"}
+          <button class="mini-btn" id="transcribeBtn" ${!audioRec || busy ? "disabled" : ""}>
+            ${thisBusy ? `<span class="spinner"></span> <span id="transcribeStatus">Transcribiendo…</span>` : (n.transcript ? "Re-transcribir" : "Transcribir")}
           </button>
         </h4>
-        <div class="body-text" id="transcriptText">${n.transcript ? escapeHTML(n.transcript) : '<span style="color:var(--text-dim)">Sin transcribir todavía.</span>'}</div>
+        <div class="body-text" id="transcriptText">${n.transcript ? escapeHTML(n.transcript) : '<span style="color:var(--text-dim)">Sin transcribir todavía. La transcripción se hace en este dispositivo, sin clave de API.</span>'}</div>
       </div>
 
-      <div class="section-block">
-        <h4>Resumen
-          <button class="mini-btn" id="summarizeBtn" ${!n.transcript ? "disabled" : ""}>
-            ${n.summary ? "Regenerar resumen" : "Generar resumen"}
-          </button>
-        </h4>
-        <div class="body-text" id="summaryText">${n.summary ? escapeHTML(n.summary) : '<span style="color:var(--text-dim)">Genera el resumen después de transcribir.</span>'}</div>
-      </div>
+      ${hasSummary ? `<div class="section-block">
+        <h4>Resumen (versión anterior)</h4>
+        <div class="body-text">${escapeHTML(n.summary)}</div>
+      </div>` : ""}
 
-      <div class="section-block">
+      ${hasTasks ? `<div class="section-block">
         <h4>Tareas / acciones</h4>
         <div id="actionItemsList">${renderActionItems(n)}</div>
-      </div>
+      </div>` : ""}
 
       <div class="detail-actions">
-        <button class="mini-btn" id="exportMdBtn">⬇ Exportar Markdown</button>
-        <button class="mini-btn" id="downloadAudioBtn" ${!audioUrl ? "disabled" : ""}>⬇ Descargar audio</button>
+        <div class="export-label">Descargar</div>
+        <button class="mini-btn" id="exportTxtTranscriptBtn" ${!n.transcript ? "disabled" : ""}>⬇ Transcripción (.txt)</button>
+        <button class="mini-btn" id="exportTxtFullBtn">⬇ Nota completa (.txt)</button>
+        <button class="mini-btn" id="exportMdBtn">⬇ Markdown (.md)</button>
+        <button class="mini-btn" id="exportPdfBtn">⬇ PDF</button>
+        <button class="mini-btn" id="downloadAudioBtn" ${!audioUrl ? "disabled" : ""}>⬇ Audio</button>
       </div>
     `;
 
@@ -1129,29 +1130,25 @@
       await idbPut("notes", n);
       await loadNotes(); renderFolderNav(); renderNoteList();
     });
-    if (audioRec) {
-      document.getElementById("transcribeBtn").addEventListener("click", () => transcribeNote(n.id, audioRec.blob));
+    if (audioRec && !busy) {
+      document.getElementById("transcribeBtn").addEventListener("click", () => {
+        if (n.transcript && !confirm("¿Reemplazar la transcripción actual?")) return;
+        transcribeNote(n.id, audioRec.blob);
+      });
     }
-    document.getElementById("summarizeBtn").addEventListener("click", () => summarizeNote(n.id));
+    document.getElementById("exportTxtTranscriptBtn").addEventListener("click", () => exportTranscriptTxt(n));
+    document.getElementById("exportTxtFullBtn").addEventListener("click", () => exportNoteTxt(n));
     document.getElementById("exportMdBtn").addEventListener("click", () => exportNoteMarkdown(n));
+    document.getElementById("exportPdfBtn").addEventListener("click", () => exportNotePdf(n));
     if (audioUrl) {
       document.getElementById("downloadAudioBtn").addEventListener("click", () => {
         const a = document.createElement("a");
         a.href = audioUrl;
-        a.download = (n.title || "nota") + "." + audioExtension(audioRec.blob.type);
+        a.download = safeFileName(n.title) + "." + audioExtension(audioRec.blob.type);
         a.click();
       });
     }
-
-    body.querySelectorAll(".action-checkbox").forEach((cb) => {
-      cb.addEventListener("change", async (e) => {
-        const item = n.actionItems.find((it) => it.id === e.target.dataset.itemId);
-        if (item) item.done = e.target.checked;
-        await idbPut("notes", n);
-        document.getElementById("actionItemsList").innerHTML = renderActionItems(n);
-        attachActionListeners(n);
-      });
-    });
+    attachActionListeners(n);
   }
 
   function attachActionListeners(n) {
@@ -1160,14 +1157,13 @@
         const item = n.actionItems.find((it) => it.id === e.target.dataset.itemId);
         if (item) item.done = e.target.checked;
         await idbPut("notes", n);
+        document.getElementById("actionItemsList").innerHTML = renderActionItems(n);
+        attachActionListeners(n);
       };
     });
   }
 
   function renderActionItems(n) {
-    if (!n.actionItems || n.actionItems.length === 0) {
-      return `<span style="color:var(--text-dim);font-size:13.5px;">Sin tareas extraídas todavía. Se generan junto con el resumen.</span>`;
-    }
     return n.actionItems.map((it) => `
       <div class="action-item ${it.done ? "done" : ""}">
         <input type="checkbox" class="action-checkbox" data-item-id="${it.id}" ${it.done ? "checked" : ""} />
@@ -1177,6 +1173,7 @@
 
   document.getElementById("deleteNoteBtn").addEventListener("click", async () => {
     if (!currentDetailNoteId) return;
+    if (transcribingNoteId === currentDetailNoteId) { toast("Espera a que termine la transcripción de esta nota."); return; }
     if (!confirm("¿Eliminar esta nota y su audio? Esta acción no se puede deshacer.")) return;
     await idbDelete("notes", currentDetailNoteId);
     await idbDelete("audio", currentDetailNoteId);
@@ -1186,102 +1183,116 @@
     toast("Nota eliminada");
   });
 
-  /* ======================= OpenAI calls ======================= */
-  async function transcribeNote(noteId, blob) {
-    const { apiKey, lang } = getSettings();
-    if (!apiKey) { toast("Agrega tu clave de API en Ajustes primero"); openOverlay("settingsOverlay"); return; }
-    const btn = document.getElementById("transcribeBtn");
-    const original = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> Transcribiendo…`;
-    try {
-      const fd = new FormData();
-      if (blob.size > 25 * 1024 * 1024) throw new Error("El audio supera 25 MB. Divide o comprime el archivo antes de transcribir.");
-      const ext = audioExtension(blob.type);
-      fd.append("file", blob, `audio.${ext}`);
-      fd.append("model", "whisper-1");
-      if (lang) fd.append("language", lang);
+  /* ======================= Transcripción local (Whisper en el navegador) ======================= */
+  const TRANSFORMERS_URL = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.0.2";
+  let asrPipe = null, asrModelId = null;
 
-      const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${apiKey}` },
-        body: fd,
-      });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`API respondió ${res.status}: ${errText.slice(0, 200)}`);
-      }
-      const data = await res.json();
-      const n = notes.find((x) => x.id === noteId);
-      if (!n) throw new Error("La nota fue eliminada durante la solicitud.");
-      n.transcript = data.text || "";
-      await idbPut("notes", n);
-      await loadNotes(); renderNoteList();
-      await renderDetail();
-      toast("Transcripción lista");
-    } catch (err) {
-      toast("Error al transcribir: " + err.message);
-      btn.disabled = false;
-      btn.innerHTML = original;
-    }
+  function setTranscribeStatus(text) {
+    const el = document.getElementById("transcribeStatus");
+    if (el && currentDetailNoteId === transcribingNoteId) el.textContent = text;
   }
 
-  async function summarizeNote(noteId) {
-    const { apiKey, model } = getSettings();
-    if (!apiKey) { toast("Agrega tu clave de API en Ajustes primero"); openOverlay("settingsOverlay"); return; }
-    const n = notes.find((x) => x.id === noteId);
-    if (!n || !n.transcript) { toast("Primero transcribe la nota"); return; }
-    const btn = document.getElementById("summarizeBtn");
-    const original = btn.innerHTML;
-    btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> Generando…`;
-    try {
-      const sysPrompt = `Eres un asistente que resume notas de voz (reuniones o notas de investigación) en español. ` +
-        `Responde EXCLUSIVAMENTE con un JSON válido (sin texto adicional, sin markdown) con esta forma exacta: ` +
-        `{"title": "título breve y descriptivo (máx 8 palabras)", "summary": "resumen claro de 3 a 6 oraciones", "actionItems": ["acción 1", "acción 2"]}. ` +
-        `Si no hay tareas o acciones claras, devuelve actionItems como arreglo vacío.`;
-      const res = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: sysPrompt },
-            { role: "user", content: n.transcript },
-          ],
-          temperature: 0.3,
-        }),
-      });
-      if (!res.ok) {
-        const errText = await res.text();
-        throw new Error(`API respondió ${res.status}: ${errText.slice(0, 200)}`);
-      }
-      const data = await res.json();
-      let raw = data.choices?.[0]?.message?.content || "{}";
-      raw = raw.replace(/^```json\s*|```$/g, "").trim();
-      let parsed;
-      try { parsed = JSON.parse(raw); } catch { parsed = { summary: raw, actionItems: [] }; }
-      if (!parsed || typeof parsed !== "object") throw new Error("El resumen recibido no es válido.");
+  async function getASR(modelId) {
+    if (asrPipe && asrModelId === modelId) return asrPipe;
+    let mod;
+    try { mod = await import(TRANSFORMERS_URL); }
+    catch { throw new Error("No se pudo cargar el motor de transcripción. La primera vez se requiere conexión a internet."); }
+    mod.env.allowLocalModels = false;
+    const files = {};
+    const pipe = await mod.pipeline("automatic-speech-recognition", modelId, {
+      progress_callback: (p) => {
+        if (p.status === "progress" && p.file) {
+          files[p.file] = { loaded: p.loaded || 0, total: p.total || 0 };
+          const t = Object.values(files).reduce((a, f) => ({ l: a.l + f.loaded, t: a.t + f.total }), { l: 0, t: 0 });
+          if (t.t) setTranscribeStatus(`Descargando modelo ${Math.round((t.l / t.t) * 100)}%`);
+        }
+      },
+    });
+    if (asrPipe && asrPipe.dispose) { try { await asrPipe.dispose(); } catch {} }
+    asrPipe = pipe; asrModelId = modelId;
+    return pipe;
+  }
 
-      if (!notes.some(x => x.id === noteId)) throw new Error("La nota fue eliminada durante la solicitud.");
-      n.summary = typeof parsed.summary === "string" ? parsed.summary : "";
-      if (typeof parsed.title === "string" && parsed.title && (!n.title || n.title.startsWith("Nota del"))) n.title = parsed.title;
-      n.actionItems = (Array.isArray(parsed.actionItems) ? parsed.actionItems.filter(t => typeof t === "string") : []).map((t) => ({ id: uid(), text: t, done: false }));
+  async function decodeTo16kMono(blob) {
+    const buf = await blob.arrayBuffer();
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx || !window.OfflineAudioContext) throw new Error("Este navegador no puede decodificar audio.");
+    const ctx = new Ctx();
+    let decoded;
+    try { decoded = await ctx.decodeAudioData(buf); }
+    catch { throw new Error("No se pudo leer el audio de esta nota (formato no compatible con el navegador)."); }
+    finally { try { await ctx.close(); } catch {} }
+    const length = Math.max(1, Math.ceil(decoded.duration * 16000));
+    const off = new OfflineAudioContext(1, length, 16000);
+    const src = off.createBufferSource();
+    src.buffer = decoded; src.connect(off.destination); src.start();
+    const rendered = await off.startRendering();
+    return { audio: rendered.getChannelData(0), duration: decoded.duration };
+  }
+
+  async function transcribeNote(noteId, blob) {
+    if (transcribingNoteId) { toast("Ya hay una transcripción en curso."); return; }
+    const { asrModel, lang } = getSettings();
+    transcribingNoteId = noteId;
+    renderNoteList();
+    await renderDetail();
+    const started = Date.now();
+    let ticker = null;
+    try {
+      setTranscribeStatus("Preparando motor…");
+      const pipe = await getASR(asrModel);
+      setTranscribeStatus("Leyendo audio…");
+      const { audio, duration } = await decodeTo16kMono(blob);
+      if (duration > 3600) toast("Audio de más de 1 h: la transcripción local puede tardar mucho o agotar la memoria.", 5000);
+      ticker = setInterval(() => setTranscribeStatus(`Transcribiendo… ${fmtDuration((Date.now() - started) / 1000)}`), 1000);
+      setTranscribeStatus("Transcribiendo…");
+      const opts = { task: "transcribe", chunk_length_s: 30, stride_length_s: 5 };
+      if (lang === "es") opts.language = "spanish";
+      else if (lang === "en") opts.language = "english";
+      const out = await pipe(audio, opts);
+      const text = (Array.isArray(out) ? out.map((o) => o.text).join(" ") : out.text || "").trim();
+      const n = notes.find((x) => x.id === noteId);
+      if (!n) throw new Error("La nota fue eliminada durante la transcripción.");
+      n.transcript = text;
       await idbPut("notes", n);
-      await loadNotes(); renderFolderNav(); renderNoteList();
-      await renderDetail();
-      toast("Resumen generado");
+      toast(text ? "Transcripción lista" : "No se detectó voz en el audio.");
     } catch (err) {
-      toast("Error al generar resumen: " + err.message);
-      btn.disabled = false;
-      btn.innerHTML = original;
+      toast("Error al transcribir: " + (err && err.message ? err.message : err), 5000);
+    } finally {
+      clearInterval(ticker);
+      transcribingNoteId = null;
+      await loadNotes(); renderNoteList();
+      if (document.getElementById("detailOverlay").classList.contains("show")) await renderDetail();
     }
   }
 
   /* ======================= Export ======================= */
+  function safeFileName(title) {
+    return (title || "nota").replace(/[\\/:*?"<>|]+/g, "").trim().replace(/\s+/g, "_").slice(0, 80) || "nota";
+  }
+
+  function noteAsPlainText(n) {
+    let t = `${n.title || "Nota sin título"}\n`;
+    t += `${fmtDateLong(n.createdAt)} · Duración ${fmtDuration(n.durationSec)}\n\n`;
+    if (n.summary) t += `RESUMEN\n\n${n.summary}\n\n`;
+    if (n.actionItems && n.actionItems.length) {
+      t += `TAREAS\n\n`;
+      n.actionItems.forEach((it) => { t += `[${it.done ? "x" : " "}] ${it.text}\n`; });
+      t += `\n`;
+    }
+    t += `TRANSCRIPCIÓN\n\n${n.transcript || "(Sin transcribir)"}\n`;
+    return t;
+  }
+
+  function exportTranscriptTxt(n) {
+    if (!n.transcript) { toast("Primero transcribe la nota"); return; }
+    downloadText(n.transcript + "\n", safeFileName(n.title) + "_transcripcion.txt", "text/plain");
+  }
+
+  function exportNoteTxt(n) {
+    downloadText(noteAsPlainText(n), safeFileName(n.title) + ".txt", "text/plain");
+  }
+
   function exportNoteMarkdown(n) {
     let md = `# ${n.title || "Nota sin título"}\n\n`;
     md += `*${fmtDate(n.createdAt)} · ${fmtDuration(n.durationSec)}*\n\n`;
@@ -1292,11 +1303,59 @@
       md += `\n`;
     }
     if (n.transcript) md += `## Transcripción completa\n\n${n.transcript}\n`;
-    downloadText(md, (n.title || "nota").replace(/[^\w\-]+/g, "_") + ".md");
+    downloadText(md, safeFileName(n.title) + ".md", "text/markdown");
   }
 
-  function downloadText(text, filename) {
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  let jsPDFPromise = null;
+  function loadJsPDF() {
+    if (window.jspdf && window.jspdf.jsPDF) return Promise.resolve(window.jspdf.jsPDF);
+    if (!jsPDFPromise) {
+      jsPDFPromise = new Promise((resolve, reject) => {
+        const s = document.createElement("script");
+        s.src = "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js";
+        s.onload = () => (window.jspdf && window.jspdf.jsPDF) ? resolve(window.jspdf.jsPDF) : reject(new Error("Generador de PDF no disponible"));
+        s.onerror = () => { jsPDFPromise = null; reject(new Error("No se pudo cargar el generador de PDF (requiere conexión).")); };
+        document.head.appendChild(s);
+      });
+    }
+    return jsPDFPromise;
+  }
+
+  async function exportNotePdf(n) {
+    let JsPDF;
+    try { JsPDF = await loadJsPDF(); } catch (err) { toast(err.message); return; }
+    const doc = new JsPDF({ unit: "mm", format: "letter" });
+    const M = 20;
+    const W = doc.internal.pageSize.getWidth() - 2 * M;
+    const H = doc.internal.pageSize.getHeight();
+    let y = M;
+    const write = (text, { size = 11, style = "normal", gap = 2, color = [28, 29, 31] } = {}) => {
+      doc.setFont("helvetica", style);
+      doc.setFontSize(size);
+      doc.setTextColor(color[0], color[1], color[2]);
+      const lh = size * 0.3528 * 1.4;
+      for (const line of doc.splitTextToSize(String(text), W)) {
+        if (y + lh > H - M) { doc.addPage(); y = M; }
+        doc.text(line, M, y + lh * 0.75);
+        y += lh;
+      }
+      y += gap;
+    };
+    write(n.title || "Nota sin título", { size: 16, style: "bold", gap: 1 });
+    write(`${fmtDateLong(n.createdAt)} · Duración ${fmtDuration(n.durationSec)}`, { size: 9, gap: 6, color: [107, 111, 118] });
+    if (n.summary) { write("Resumen", { size: 12, style: "bold" }); write(n.summary, { gap: 6 }); }
+    if (n.actionItems && n.actionItems.length) {
+      write("Tareas", { size: 12, style: "bold" });
+      n.actionItems.forEach((it) => write(`[${it.done ? "x" : " "}] ${it.text}`, { gap: 1 }));
+      y += 5;
+    }
+    write("Transcripción", { size: 12, style: "bold" });
+    write(n.transcript || "(Sin transcribir)");
+    doc.save(safeFileName(n.title) + ".pdf");
+  }
+
+  function downloadText(text, filename, type = "text/plain") {
+    const blob = new Blob(["\ufeff" + text], { type: type + ";charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = filename;
@@ -1306,7 +1365,11 @@
 
   document.getElementById("exportAllBtn").addEventListener("click", () => {
     const payload = { exportedAt: new Date().toISOString(), folders, notes };
-    downloadText(JSON.stringify(payload, null, 2), "bitacora_ia_respaldo.json");
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "bitacora_ia_respaldo.json"; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
     toast("Respaldo descargado (sin archivos de audio)");
   });
 
@@ -1343,18 +1406,14 @@
   async function init() {
     applyTheme(getSettings().theme);
     setupMobileNav();
+    // La versión anterior guardaba una clave de OpenAI; ya no se usa, se elimina del dispositivo.
+    try { localStorage.removeItem("bitacora_apiKey"); localStorage.removeItem("bitacora_model"); } catch {}
     await openDB();
     await loadFolders();
     await loadNotes();
     await recoverDrafts();
     renderFolderNav();
     renderNoteList();
-
-    if (!getSettings().apiKey) {
-      setTimeout(() => {
-        toast("Agrega tu clave de API de OpenAI en Ajustes ⚙️ para transcribir y resumir");
-      }, 800);
-    }
 
     if ("serviceWorker" in navigator) {
       navigator.serviceWorker.register("./sw.js").catch(() => {});
